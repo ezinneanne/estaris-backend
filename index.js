@@ -1,156 +1,180 @@
-const express = require('express');
-const cors = require('cors');
-const app = express();
+// index.js
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
 
+dotenv.config();
+
+const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ----------------------------------------
 // MOCK DATABASES
-// ----------------------------------------
-const appointments = [];       // Barber bookings
-const foodOrders = [];         // Restaurant orders
-const reservations = [];       // Restaurant reservations
+const appointments = [];
+const orders = [];
+const reservations = [];
 
-// -------------------------------------------------------
-// ✂️ BARBING TOOL: Check Availability
-// -------------------------------------------------------
-app.post('/checkAvailability', (req, res) => {
-  const toolCall = req.body?.message?.toolCalls?.[0];
-  if (!toolCall) {
-    return res.status(400).json({ error: "Invalid tool call payload" });
+/**
+ * Helper to safely read toolCallId from multiple possible Vapi shapes
+ */
+function getFirstToolCallId(req) {
+  try {
+    // Common paths
+    if (req.body?.message?.toolCalls && Array.isArray(req.body.message.toolCalls)) {
+      return req.body.message.toolCalls[0]?.id ?? null;
+    }
+    // fallback if structure is different
+    if (req.body?.toolCallId) return req.body.toolCallId;
+  } catch (e) {
+    // ignore
   }
+  return null;
+}
 
-  const isAvailable = Math.random() > 0.2; // Mock 80% availability
+/* -------------------------
+   BARBER / Booking endpoints
+   (existing)
+   ------------------------- */
 
+// TOOL: Check Availability (barbing)
+app.post('/checkAvailability', (req, res) => {
+  const toolCallId = getFirstToolCallId(req);
+  // Demo logic: 80% available
+  const isAvailable = Math.random() > 0.2;
   return res.json({
-    results: [
-      {
-        toolCallId: toolCall.id,
-        result: isAvailable ? "available" : "unavailable"
-      }
-    ]
+    results: [{
+      toolCallId,
+      result: isAvailable ? "available" : "unavailable"
+    }]
   });
 });
 
-// -------------------------------------------------------
-// ✂️ BARBING TOOL: Book Appointment
-// -------------------------------------------------------
+// TOOL: Book Appointment (barbing)
 app.post('/bookAppointment', (req, res) => {
   const toolCall = req.body?.message?.toolCalls?.[0];
-  if (!toolCall) {
-    return res.status(400).json({ error: "Invalid tool call payload" });
-  }
-
-  const args = toolCall.function.arguments;
-
+  const args = toolCall?.function?.arguments ?? {};
   const newAppt = {
     id: 'REF-' + Math.floor(Math.random() * 10000),
-    name: args.name,
-    time: args.dateTime,
-    service: args.service
+    name: args.name ?? 'Unknown',
+    time: args.dateTime ?? args.time ?? null,
+    service: args.service ?? 'General'
   };
-
   appointments.push(newAppt);
-  console.log("New Barber Booking:", newAppt);
-
+  console.log("New Booking:", newAppt);
   return res.json({
-    results: [
-      {
-        toolCallId: toolCall.id,
-        result: `Appointment confirmed! Reference ID: ${newAppt.id}`
-      }
-    ]
+    results: [{
+      toolCallId: toolCall?.id ?? getFirstToolCallId(req),
+      result: `Confirmed! Reference ID: ${newAppt.id}`
+    }]
   });
 });
 
-// -------------------------------------------------------
-// ✂️ BARBING TOOL: Get Services List
-// -------------------------------------------------------
+// TOOL: Get Services (barbing)
 app.post('/getServicesList', (req, res) => {
   return res.json({
-    results: [
-      {
-        toolCallId: req.body.message.toolCalls[0].id,
-        result: "Haircut ($30), Beard Trim ($15), Full Grooming ($40)"
-      }
-    ]
+    results: [{
+      toolCallId: getFirstToolCallId(req),
+      result: "Haircut ($30), Beard Trim ($15), Full Service ($40)"
+    }]
   });
 });
 
-// =======================================================================
-// 🍽️ RESTAURANT FEATURE: BOOK ORDER
-// =======================================================================
+/* -------------------------
+   RESTAURANT endpoints (NEW)
+   ------------------------- */
+
+/**
+ * TOOL: book_order
+ * Expects function.arguments with:
+ * { name, email, phone, address, food_details, dietary_concerns }
+ */
 app.post('/book_order', (req, res) => {
   const toolCall = req.body?.message?.toolCalls?.[0];
-  if (!toolCall) {
-    return res.status(400).json({ error: "Invalid tool call structure" });
+  const args = toolCall?.function?.arguments ?? {};
+
+  if (!args?.food_details || !args?.name || !args?.email || !args?.phone || !args?.address) {
+    // return an error result structure that Vapi can consume
+    return res.status(400).json({
+      results: [{
+        toolCallId: toolCall?.id ?? getFirstToolCallId(req),
+        result: { error: 'Missing required fields for book_order' }
+      }]
+    });
   }
 
-  const args = toolCall.function.arguments;
-
   const order = {
-    id: 'ORDER-' + Math.floor(Math.random() * 100000),
+    id: 'ORD-' + Math.floor(Math.random() * 100000),
     name: args.name,
     email: args.email,
     phone: args.phone,
     address: args.address,
     food_details: args.food_details,
-    dietary_concerns: args.dietary_concerns || "None"
+    dietary_concerns: args.dietary_concerns ?? '',
+    createdAt: new Date().toISOString()
   };
-
-  foodOrders.push(order);
-  console.log("New Food Order:", order);
+  orders.push(order);
+  console.log('New Food Order:', order);
 
   return res.json({
-    results: [
-      {
-        toolCallId: toolCall.id,
-        result: `Order placed successfully! Order ID: ${order.id}`
+    results: [{
+      toolCallId: toolCall?.id ?? getFirstToolCallId(req),
+      result: {
+        message: `Order received. Reference: ${order.id}`,
+        order_id: order.id
       }
-    ]
+    }]
   });
 });
 
-// =======================================================================
-// 🍽️ RESTAURANT FEATURE: BOOK RESERVATION
-// =======================================================================
+/**
+ * TOOL: book_reservation
+ * Expects function.arguments with:
+ * { date, name, time, email, phone, dietary_concerns, number_of_guests }
+ */
 app.post('/book_reservation', (req, res) => {
   const toolCall = req.body?.message?.toolCalls?.[0];
-  if (!toolCall) {
-    return res.status(400).json({ error: "Invalid tool call structure" });
+  const args = toolCall?.function?.arguments ?? {};
+
+  if (!args?.name || !args?.phone || !args?.date || !args?.time || !args?.number_of_guests) {
+    return res.status(400).json({
+      results: [{
+        toolCallId: toolCall?.id ?? getFirstToolCallId(req),
+        result: { error: 'Missing required fields for book_reservation' }
+      }]
+    });
   }
 
-  const args = toolCall.function.arguments;
-
   const reservation = {
-    id: 'RSV-' + Math.floor(Math.random() * 100000),
+    id: 'RESV-' + Math.floor(Math.random() * 100000),
     name: args.name,
-    email: args.email,
     phone: args.phone,
+    email: args.email ?? '',
     date: args.date,
     time: args.time,
     number_of_guests: args.number_of_guests,
-    dietary_concerns: args.dietary_concerns || "None"
+    dietary_concerns: args.dietary_concerns ?? '',
+    createdAt: new Date().toISOString()
   };
-
   reservations.push(reservation);
-  console.log("New Reservation:", reservation);
+  console.log('New Reservation:', reservation);
 
+  // In a real app you'd check availability and maybe return alternative slots
   return res.json({
-    results: [
-      {
-        toolCallId: toolCall.id,
-        result: `Reservation confirmed! Reservation ID: ${reservation.id}`
+    results: [{
+      toolCallId: toolCall?.id ?? getFirstToolCallId(req),
+      result: {
+        message: `Reservation confirmed. Reference: ${reservation.id}`,
+        reservation_id: reservation.id
       }
-    ]
+    }]
   });
 });
 
-// -------------------------------------------------------
-// HEALTH CHECK
-// -------------------------------------------------------
-app.get('/', (req, res) => res.send('Vapi Barber + Restaurant Backend Running!'));
+/* -------------------------
+   Health check & root
+   ------------------------- */
+app.get('/', (req, res) => res.send('Vapi Agent Backend is Running!'));
 
+// Port from env or 3000
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
